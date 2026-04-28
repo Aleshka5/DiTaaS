@@ -1,0 +1,25 @@
+[project]
+name = "ditaas"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "boto3",
+    "mlflow",
+    "numpy",
+    "pydantic",
+    "pydantic-settings",
+    "safetensors",
+    "torch",
+]
+
+# Сборки torch/torchvision с CUDA (см. https://pytorch.org/get-started/locally/ )
+[[tool.uv.index]]
+name = "pytorch-cu124"
+url = "https://download.pytorch.org/whl/cu124"
+explicit = true
+
+[tool.uv.sources]
+torch = { index = "pytorch-cu124" }
+torchvision = { index = "pytorch-cu124" }
