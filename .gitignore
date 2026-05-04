@@ -221,3 +221,6 @@ __marimo__/
 *.sft
 *.mdc
 *.csv
+
+# Models
+*.pt

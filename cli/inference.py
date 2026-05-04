@@ -9,7 +9,12 @@ import torch
 
 from src.config import get_settings
 from src.repositories.mlflow import MLFlowRepository
-from src.utils.dit_model import DiTModel, ModelConfig
+from src.utils.model_archive import (
+    build_config_from_run_params,
+    build_model,
+    get_model_entry,
+    list_architectures,
+)
 from src.utils.noise_scheduler import LinearNoiseScheduler
 
 
@@ -39,6 +44,13 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--tracking-uri", type=str, default=settings.mlflow_tracking_uri)
     parser.add_argument("--registry-uri", type=str, default=settings.mlflow_registry_uri)
+    parser.add_argument(
+        "--architecture",
+        type=str,
+        default=None,
+        choices=list_architectures(),
+        help="Имя архитектуры модели. Если не указано, берется из MLflow params или Settings.",
+    )
     parser.add_argument(
         "--seed",
         type=int,
@@ -199,9 +211,11 @@ def _pick_random_dataset_sample(
 @torch.no_grad()
 def _run_reverse_diffusion(
     *,
-    model: DiTModel,
+    model: torch.nn.Module,
     scheduler: LinearNoiseScheduler,
     condition_latents: torch.Tensor,
+    query_height: int,
+    query_width: int,
     num_steps: int,
     device: torch.device,
 ) -> torch.Tensor:
@@ -211,8 +225,8 @@ def _run_reverse_diffusion(
     query_shape = (
         condition_latents.shape[0],
         model.config.latent_channels,
-        model.config.query_height,
-        model.config.query_width,
+        query_height,
+        query_width,
     )
     current = torch.randn(query_shape, device=device)
     max_timestep = scheduler.num_train_timesteps - 1
@@ -279,22 +293,14 @@ def main() -> None:
     condition_key = args.condition_key or run_params.get("condition_key") or settings.condition_key
     target_key = args.target_key or run_params.get("target_key") or settings.target_key
 
-    model_config = ModelConfig(
-        latent_channels=_parse_int(run_params, "latent_channels", settings.latent_channels),
-        condition_height=_parse_int(run_params, "condition_height", settings.condition_height),
-        condition_width=_parse_int(run_params, "condition_width", settings.condition_width),
-        query_height=_parse_int(run_params, "query_height", settings.query_height),
-        query_width=_parse_int(run_params, "query_width", settings.query_width),
-        hidden_size=_parse_int(run_params, "hidden_size", settings.hidden_size),
-        num_attention_heads=_parse_int(
-            run_params, "num_attention_heads", settings.num_attention_heads
-        ),
-        num_transformer_blocks=_parse_int(
-            run_params, "num_transformer_blocks", settings.num_transformer_blocks
-        ),
-        mlp_ratio=_parse_float(run_params, "mlp_ratio", settings.mlp_ratio),
-        dropout=_parse_float(run_params, "dropout", settings.dropout),
-        max_timestep=_parse_int(run_params, "num_train_timesteps", settings.num_train_timesteps),
+    architecture_name = (
+        args.architecture or run_params.get("architecture_name") or settings.model_architecture
+    )
+    get_model_entry(architecture_name)
+    model_config = build_config_from_run_params(
+        settings=settings,
+        architecture_name=architecture_name,
+        run_params=run_params,
     )
 
     num_train_timesteps = _parse_int(
@@ -316,7 +322,7 @@ def main() -> None:
     )
 
     device = _resolve_device()
-    model = DiTModel(model_config).to(device)
+    model = build_model(model_config).to(device)
     model.eval()
 
     if args.weights_path:
@@ -349,6 +355,8 @@ def main() -> None:
         model=model,
         scheduler=scheduler,
         condition_latents=condition_sample,
+        query_height=target_sample.shape[2],
+        query_width=target_sample.shape[3],
         num_steps=num_steps,
         device=device,
     )

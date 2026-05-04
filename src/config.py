@@ -49,6 +49,7 @@ class Settings(BaseSettings):
     )
 
     latent_channels: int = Field(default=16, alias="LATENT_CHANNELS")
+    model_architecture: str = Field(default="dit", alias="MODEL_ARCHITECTURE")
     condition_key: str = Field(default="latents_54x30", alias="CONDITION_KEY")
     target_key: str = Field(default="latents_16x30", alias="TARGET_KEY")
     condition_height: int = Field(default=54, alias="CONDITION_HEIGHT")
@@ -60,6 +61,8 @@ class Settings(BaseSettings):
     num_transformer_blocks: int = Field(default=6, alias="NUM_TRANSFORMER_BLOCKS")
     mlp_ratio: float = Field(default=4.0, alias="MLP_RATIO")
     dropout: float = Field(default=0.0, alias="DROPOUT")
+    dit_v2_query_patch_size: int = Field(default=2, alias="DIT_V2_QUERY_PATCH_SIZE")
+    dit_v2_condition_patch_size: int = Field(default=2, alias="DIT_V2_CONDITION_PATCH_SIZE")
 
     train_batch_size: int = Field(default=8, alias="TRAIN_BATCH_SIZE")
     train_num_workers: int = Field(default=0, alias="TRAIN_NUM_WORKERS")
@@ -89,6 +92,7 @@ class Settings(BaseSettings):
     def mlflow_param_dict(self) -> dict[str, Any]:
         return {
             "latent_channels": self.latent_channels,
+            "architecture_name": self.model_architecture,
             "condition_key": self.condition_key,
             "target_key": self.target_key,
             "condition_height": self.condition_height,
@@ -100,6 +104,8 @@ class Settings(BaseSettings):
             "num_transformer_blocks": self.num_transformer_blocks,
             "mlp_ratio": self.mlp_ratio,
             "dropout": self.dropout,
+            "query_patch_size": self.dit_v2_query_patch_size,
+            "condition_patch_size": self.dit_v2_condition_patch_size,
             "train_batch_size": self.train_batch_size,
             "train_num_workers": self.train_num_workers,
             "train_num_epochs": self.train_num_epochs,

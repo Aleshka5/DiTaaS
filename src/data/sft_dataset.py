@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import zlib
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Iterator
 
@@ -38,6 +39,7 @@ class SFTLatentDataset(IterableDataset[dict[str, Tensor]]):
         self.split = split
         self.train_ratio = train_ratio
         self.split_seed = split_seed
+        self._logged_files: set[str] = set()
 
         if not self.dataset_dir.exists():
             raise FileNotFoundError(f"Директория датасета не найдена: {self.dataset_dir}")
@@ -130,7 +132,19 @@ class SFTLatentDataset(IterableDataset[dict[str, Tensor]]):
 
     def __iter__(self) -> Iterator[dict[str, Tensor]]:
         files = self._resolve_files_for_worker()
-        for file_path in files:
+        worker = get_worker_info()
+        worker_label = f"worker={worker.id}" if worker is not None else "worker=main"
+        total_files = len(files)
+        for file_index, file_path in enumerate(files, start=1):
+            file_key = str(file_path.resolve())
+            if file_key not in self._logged_files:
+                timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                print(
+                    f"[{timestamp}] [sft:{self.split}] {worker_label} opening "
+                    f"{file_index}/{total_files}: {file_path.name}",
+                    flush=True,
+                )
+                self._logged_files.add(file_key)
             payload = self._load_sft(file_path)
             if self.condition_key not in payload or self.target_key not in payload:
                 missing = {self.condition_key, self.target_key}.difference(payload.keys())

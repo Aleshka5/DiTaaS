@@ -16,7 +16,9 @@ from mlflow.models.signature import ModelSignature
 from mlflow.types.schema import Schema, TensorSpec
 
 from src.config import get_settings
-from src.utils.dit_model import DiTModel, ModelConfig
+from src.utils.dit_model import BaseModelConfig, DiTModelConfig
+from src.utils.dit_v2_model import DiTV2ModelConfig
+from src.utils.model_archive import build_model, get_model_entry
 
 
 class DiTPyFuncModel(mlflow.pyfunc.PythonModel):
@@ -26,7 +28,10 @@ class DiTPyFuncModel(mlflow.pyfunc.PythonModel):
         config_path = Path(context.artifacts["model_config"])
         weights_path = Path(context.artifacts["weights"])
         config_payload = json.loads(config_path.read_text(encoding="utf-8"))
-        self.model = DiTModel(ModelConfig(**config_payload)).to("cpu")
+        architecture_name = config_payload.get("architecture_name", "dit")
+        archive_entry = get_model_entry(architecture_name)
+        model_config = archive_entry.config_cls(**config_payload)
+        self.model = build_model(model_config).to("cpu")
         state_dict = torch.load(weights_path, map_location="cpu")
         self.model.load_state_dict(state_dict, strict=True)
         self.model.eval()
@@ -162,7 +167,9 @@ class MLFlowRepository:
             artifact_relpath=f"{artifact_dir}/{checkpoint_name}",
         )
 
-    def _build_dit_signature(self, model_config: ModelConfig) -> tuple[ModelSignature, dict[str, np.ndarray]]:
+    def _build_dit_signature(
+        self, model_config: DiTModelConfig | DiTV2ModelConfig
+    ) -> tuple[ModelSignature, dict[str, np.ndarray]]:
         signature = ModelSignature(
             inputs=Schema(
                 [
@@ -223,11 +230,30 @@ class MLFlowRepository:
         active_run = self.mlflow.active_run()
         if active_run is None:
             raise RuntimeError("Нет активного MLflow run для регистрации модели.")
-        if not isinstance(model, DiTModel):
-            raise TypeError(f"Ожидается DiTModel, получено: {type(model).__name__}")
+        if not hasattr(model, "config"):
+            raise TypeError(
+                "Ожидается torch.nn.Module с полем config, "
+                f"получено: {type(model).__name__}"
+            )
+        model_config = model.config
+        if not isinstance(model_config, BaseModelConfig):
+            raise TypeError(
+                "Ожидается BaseModelConfig в model.config, "
+                f"получено: {type(model_config).__name__}"
+            )
 
         model.eval()
-        signature, input_example = self._build_dit_signature(model.config)
+        if model_config.architecture_name in {"dit", "dit_v2"}:
+            if not isinstance(model_config, (DiTModelConfig, DiTV2ModelConfig)):
+                raise TypeError(
+                    "Для architecture_name='dit'/'dit_v2' ожидается DiTModelConfig или DiTV2ModelConfig, "
+                    f"получено: {type(model_config).__name__}"
+                )
+            signature, input_example = self._build_dit_signature(model_config)
+        else:
+            raise NotImplementedError(
+                "Регистрация MLflow signature реализована только для архитектур 'dit' и 'dit_v2'."
+            )
 
         with tempfile.TemporaryDirectory() as temp_dir:
             temp_root = Path(temp_dir)
@@ -251,7 +277,8 @@ class MLFlowRepository:
                 registered_model_name=registered_model_name,
                 metadata={
                     "framework": "pytorch",
-                    "model_type": "DiTModel",
+                    "model_type": model.__class__.__name__,
+                    "architecture_name": model_config.architecture_name,
                 },
             )
 

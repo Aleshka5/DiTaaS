@@ -7,8 +7,14 @@ from torch import Tensor, nn
 
 
 @dataclass(slots=True)
-class ModelConfig:
+class BaseModelConfig:
+    architecture_name: str = "dit"
     latent_channels: int = 16
+    max_timestep: int = 100
+
+
+@dataclass(slots=True)
+class DiTModelConfig(BaseModelConfig):
     condition_height: int = 54
     condition_width: int = 30
     query_height: int = 16
@@ -18,11 +24,11 @@ class ModelConfig:
     num_transformer_blocks: int = 1
     mlp_ratio: float = 4.0
     dropout: float = 0.0
-    max_timestep: int = 100
 
     @classmethod
-    def from_settings(cls, settings) -> "ModelConfig":
+    def from_settings(cls, settings, architecture_name: str = "dit") -> "DiTModelConfig":
         return cls(
+            architecture_name=architecture_name,
             latent_channels=settings.latent_channels,
             condition_height=settings.condition_height,
             condition_width=settings.condition_width,
@@ -96,7 +102,7 @@ class TransformerCrossAttentionBlock(nn.Module):
 class DiTModel(nn.Module):
     """Базовый DiT-подобный CAT для латентов 16-канального пространства."""
 
-    def __init__(self, config: ModelConfig) -> None:
+    def __init__(self, config: DiTModelConfig) -> None:
         super().__init__()
         self.config = config
 
