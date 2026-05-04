@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
+import re
 import shutil
 import tempfile
+import inspect
 from contextlib import contextmanager
 from dataclasses import asdict
 from pathlib import Path
@@ -19,6 +22,9 @@ from src.config import get_settings
 from src.utils.dit_model import BaseModelConfig, DiTModelConfig
 from src.utils.dit_v2_model import DiTV2ModelConfig
 from src.utils.model_archive import build_model, get_model_entry
+
+
+LOGGER = logging.getLogger(__name__)
 
 
 class DiTPyFuncModel(mlflow.pyfunc.PythonModel):
@@ -87,14 +93,29 @@ class MLFlowRepository:
         import mlflow
 
         self.mlflow = mlflow
+        self.logger = LOGGER.getChild(self.__class__.__name__)
         self.settings = get_settings()
         self.tracking_uri = tracking_uri or self.settings.mlflow_tracking_uri
         self.registry_uri = registry_uri or self.settings.mlflow_registry_uri
+
+        self.logger.info(
+            "Инициализация MLFlowRepository: tracking_uri=%s (source=%s), registry_uri=%s (source=%s), experiment_name=%s",
+            self._mask_value(self.tracking_uri),
+            "arg" if tracking_uri else "settings",
+            self._mask_value(self.registry_uri),
+            "arg" if registry_uri else "settings",
+            self.settings.mlflow_experiment_name,
+        )
 
         if not self.tracking_uri:
             raise ValueError("MLFLOW_TRACKING_URI не задан. Укажите его в .env или CLI.")
 
         self._apply_environment()
+        self.logger.info(
+            "Устанавливаю MLflow URIs: tracking_uri=%s, registry_uri=%s",
+            self._mask_value(self.tracking_uri),
+            self._mask_value(self.registry_uri),
+        )
         self.mlflow.set_tracking_uri(self.tracking_uri)
         if self.registry_uri:
             self.mlflow.set_registry_uri(self.registry_uri)
@@ -102,6 +123,13 @@ class MLFlowRepository:
         self.experiment_name = self.settings.mlflow_experiment_name
         self.experiment_id = self._ensure_experiment_id()
         self.client = self.mlflow.tracking.MlflowClient()
+        self.logger.info(
+            "MLFlowRepository готов: experiment_name=%s, experiment_id=%s, tracking_uri=%s, registry_uri=%s",
+            self.experiment_name,
+            self.experiment_id,
+            self._mask_value(self.mlflow.get_tracking_uri()),
+            self._mask_value(self.mlflow.get_registry_uri()),
+        )
 
     def _apply_environment(self) -> None:
         env_overrides = {
@@ -114,12 +142,76 @@ class MLFlowRepository:
         for key, value in env_overrides.items():
             if value and not os.getenv(key):
                 os.environ[key] = value
+                self.logger.info(
+                    "Установлена переменная окружения %s из settings: %s",
+                    key,
+                    self._mask_env_value(key, value),
+                )
+            elif os.getenv(key):
+                self.logger.debug(
+                    "Переменная окружения %s уже задана в окружении: %s",
+                    key,
+                    self._mask_env_value(key, os.getenv(key)),
+                )
+            else:
+                self.logger.debug("Переменная окружения %s не задана", key)
+
+    @staticmethod
+    def _mask_value(value: str | None) -> str:
+        if not value:
+            return "<empty>"
+        return re.sub(r"(://[^:/@]+:)[^@]+@", r"\1***@", value)
+
+    @staticmethod
+    def _mask_env_value(key: str, value: str | None) -> str:
+        if not value:
+            return "<empty>"
+        upper_key = key.upper()
+        if "SECRET" in upper_key or "KEY" in upper_key:
+            return "***"
+        return MLFlowRepository._mask_value(value)
 
     def _ensure_experiment_id(self) -> str:
         experiment = self.mlflow.get_experiment_by_name(self.experiment_name)
         if experiment is not None:
+            self.logger.info(
+                "Найден существующий эксперимент: name=%s, id=%s",
+                self.experiment_name,
+                experiment.experiment_id,
+            )
             return experiment.experiment_id
-        return self.mlflow.create_experiment(self.experiment_name)
+        experiment_id = self.mlflow.create_experiment(self.experiment_name)
+        self.logger.info(
+            "Создан новый эксперимент: name=%s, id=%s",
+            self.experiment_name,
+            experiment_id,
+        )
+        return experiment_id
+
+    def _list_artifact_paths(
+        self,
+        run_id: str,
+        artifact_path: str | None = None,
+        max_items: int = 200,
+    ) -> list[str]:
+        normalized_path = (artifact_path or "").strip("/")
+        stack = [normalized_path]
+        collected: list[str] = []
+
+        while stack and len(collected) < max_items:
+            current_path = stack.pop()
+            entries = self.client.list_artifacts(run_id, path=current_path)
+            for entry in entries:
+                display_path = entry.path + ("/" if entry.is_dir else "")
+                collected.append(display_path)
+                if entry.is_dir and len(collected) < max_items:
+                    stack.append(entry.path)
+                if len(collected) >= max_items:
+                    break
+
+        if len(collected) >= max_items:
+            collected.append("...truncated...")
+        return sorted(collected)
 
     @contextmanager
     def start_run(
@@ -265,22 +357,33 @@ class MLFlowRepository:
                 encoding="utf-8",
             )
 
-            model_info = self.mlflow.pyfunc.log_model(
-                artifact_path=artifact_path,
-                python_model=DiTPyFuncModel(),
-                artifacts={
+            normalized_name = re.sub(
+                r"[/:.%\"']+",
+                "_",
+                artifact_path.replace("\\", "/").strip("/") or "final_model",
+            )
+            log_model_kwargs: dict[str, Any] = {
+                "python_model": DiTPyFuncModel(),
+                "artifacts": {
                     "weights": str(weights_path),
                     "model_config": str(config_path),
                 },
-                signature=signature,
-                input_example=input_example,
-                registered_model_name=registered_model_name,
-                metadata={
+                "signature": signature,
+                "input_example": input_example,
+                "registered_model_name": registered_model_name,
+                "metadata": {
                     "framework": "pytorch",
                     "model_type": model.__class__.__name__,
                     "architecture_name": model_config.architecture_name,
                 },
-            )
+            }
+            log_model_signature = inspect.signature(self.mlflow.pyfunc.log_model)
+            if "name" in log_model_signature.parameters:
+                log_model_kwargs["name"] = normalized_name
+            else:
+                log_model_kwargs["artifact_path"] = artifact_path
+
+            model_info = self.mlflow.pyfunc.log_model(**log_model_kwargs)
 
         registered_version = getattr(model_info, "registered_model_version", None)
         model_uri = model_info.model_uri
@@ -307,19 +410,84 @@ class MLFlowRepository:
 
         destination = Path(output_dir).resolve()
         destination.mkdir(parents=True, exist_ok=True)
+        self.logger.info(
+            "Старт загрузки датасета из MLflow: run_ids=%s, artifact_subpath=%s, output_dir=%s",
+            run_ids,
+            artifact_subpath,
+            destination,
+        )
 
         collected_files: list[Path] = []
         for run_id in run_ids:
-            with tempfile.TemporaryDirectory() as temp_dir:
-                downloaded_path = self.mlflow.artifacts.download_artifacts(
-                    run_id=run_id,
-                    artifact_path=artifact_subpath,
-                    dst_path=temp_dir,
+            self.logger.info(
+                "Загрузка артефактов для run_id=%s из подкаталога=%s",
+                run_id,
+                artifact_subpath,
+            )
+            try:
+                root_artifacts = [entry.path for entry in self.client.list_artifacts(run_id, path="")]
+                target_artifacts = [
+                    entry.path for entry in self.client.list_artifacts(run_id, path=artifact_subpath)
+                ]
+                self.logger.debug("run_id=%s, корневые артефакты: %s", run_id, root_artifacts)
+                self.logger.debug(
+                    "run_id=%s, артефакты по пути '%s': %s",
+                    run_id,
+                    artifact_subpath,
+                    target_artifacts,
                 )
+            except Exception as error:
+                self.logger.warning(
+                    "Не удалось предварительно получить список артефактов для run_id=%s: %s",
+                    run_id,
+                    error,
+                )
+            with tempfile.TemporaryDirectory() as temp_dir:
+                try:
+                    downloaded_path = self.mlflow.artifacts.download_artifacts(
+                        run_id=run_id,
+                        artifact_path=artifact_subpath,
+                        dst_path=temp_dir,
+                    )
+                except Exception as error:
+                    available_paths = self._list_artifact_paths(run_id=run_id)
+                    self.logger.error(
+                        "Ошибка скачивания run_id=%s, artifact_subpath=%s. Доступные артефакты: %s. Ошибка: %s",
+                        run_id,
+                        artifact_subpath,
+                        available_paths,
+                        error,
+                    )
+                    raise
+                self.logger.info(
+                    "Скачивание run_id=%s завершено: downloaded_path=%s",
+                    run_id,
+                    downloaded_path,
+                )
+                copied_count = 0
                 for sft_file in sorted(Path(downloaded_path).rglob("*.sft")):
                     target = destination / sft_file.name
                     if target.exists():
                         target.unlink()
                     shutil.copy2(sft_file, target)
                     collected_files.append(target)
+                    copied_count += 1
+                    self.logger.debug(
+                        "Скопирован файл: run_id=%s, source=%s, target=%s, size_bytes=%s",
+                        run_id,
+                        sft_file,
+                        target,
+                        target.stat().st_size,
+                    )
+                if copied_count == 0:
+                    available_paths = self._list_artifact_paths(run_id=run_id, artifact_path=artifact_subpath)
+                    self.logger.warning(
+                        "Для run_id=%s не найдено *.sft в '%s'. Содержимое ветки: %s",
+                        run_id,
+                        artifact_subpath,
+                        available_paths,
+                    )
+                else:
+                    self.logger.info("Для run_id=%s скопировано %s *.sft файлов", run_id, copied_count)
+        self.logger.info("Загрузка датасета завершена: всего файлов=%s", len(collected_files))
         return collected_files
