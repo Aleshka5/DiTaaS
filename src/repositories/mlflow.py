@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import platform
 import re
 import shutil
 import tempfile
@@ -130,6 +131,7 @@ class MLFlowRepository:
             self._mask_value(self.mlflow.get_tracking_uri()),
             self._mask_value(self.mlflow.get_registry_uri()),
         )
+        self._log_connection_debug_context()
 
     def _apply_environment(self) -> None:
         env_overrides = {
@@ -168,8 +170,98 @@ class MLFlowRepository:
             return "<empty>"
         upper_key = key.upper()
         if "SECRET" in upper_key or "KEY" in upper_key:
+            if upper_key == "AWS_ACCESS_KEY_ID":
+                return MLFlowRepository._mask_access_key_id(value)
             return "***"
         return MLFlowRepository._mask_value(value)
+
+    @staticmethod
+    def _mask_access_key_id(value: str | None) -> str:
+        if not value:
+            return "<empty>"
+        if len(value) <= 8:
+            return "***"
+        return f"{value[:4]}***{value[-4:]}"
+
+    def _effective_env_value(self, env_key: str, settings_value: str | None) -> tuple[str, str]:
+        env_value = os.getenv(env_key)
+        if env_value:
+            return "env", self._mask_env_value(env_key, env_value)
+        if settings_value:
+            return "settings", self._mask_env_value(env_key, settings_value)
+        return "missing", "<empty>"
+
+    def _log_connection_debug_context(self) -> None:
+        env_rows = [
+            ("AWS_ACCESS_KEY_ID", self.settings.aws_access_key_id),
+            ("AWS_SECRET_ACCESS_KEY", self.settings.aws_secret_access_key),
+            ("AWS_DEFAULT_REGION", self.settings.aws_default_region),
+            ("S3_ENDPOINT_URL", self.settings.s3_endpoint_url),
+            ("MLFLOW_S3_ENDPOINT_URL", self.settings.mlflow_s3_endpoint_url),
+            ("MLFLOW_TRACKING_URI", self.tracking_uri),
+            ("MLFLOW_REGISTRY_URI", self.registry_uri),
+        ]
+        snapshot = {
+            key: {
+                "source": source,
+                "value": value,
+            }
+            for key, settings_value in env_rows
+            for source, value in [self._effective_env_value(key, settings_value)]
+        }
+        self.logger.info(
+            "MLflow debug context: host=%s, tracking_uri_effective=%s, registry_uri_effective=%s",
+            platform.node() or "<unknown-host>",
+            self._mask_value(self.mlflow.get_tracking_uri()),
+            self._mask_value(self.mlflow.get_registry_uri()),
+        )
+        self.logger.debug("MLflow environment snapshot: %s", snapshot)
+
+        try:
+            experiment = self.client.get_experiment(self.experiment_id)
+            self.logger.info(
+                "MLflow experiment metadata: id=%s, name=%s, artifact_location=%s",
+                experiment.experiment_id,
+                experiment.name,
+                self._mask_value(experiment.artifact_location),
+            )
+        except Exception as error:
+            self.logger.warning(
+                "Не удалось получить метаданные эксперимента id=%s: %s",
+                self.experiment_id,
+                error,
+            )
+
+        try:
+            runs = self.client.search_runs(
+                experiment_ids=[self.experiment_id],
+                max_results=1,
+                order_by=["attributes.start_time DESC"],
+            )
+            if not runs:
+                self.logger.info(
+                    "В эксперименте %s пока нет run для проверки доступа к артефактам.",
+                    self.experiment_id,
+                )
+                return
+            probe_run_id = runs[0].info.run_id
+            self.logger.info("Пробный run для проверки артефактов: run_id=%s", probe_run_id)
+            root_artifacts = self.client.list_artifacts(probe_run_id, path="")
+            self.logger.info(
+                "Проверка list_artifacts OK для run_id=%s, root_entries=%s",
+                probe_run_id,
+                len(root_artifacts),
+            )
+            self.logger.debug(
+                "Проверка list_artifacts детали run_id=%s: %s",
+                probe_run_id,
+                [entry.path for entry in root_artifacts],
+            )
+        except Exception as error:
+            self.logger.warning(
+                "Проверка list_artifacts завершилась ошибкой (это важно для диагностики AccessDenied): %s",
+                error,
+            )
 
     def _ensure_experiment_id(self) -> str:
         experiment = self.mlflow.get_experiment_by_name(self.experiment_name)

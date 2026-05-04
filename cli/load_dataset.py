@@ -1,10 +1,19 @@
 from __future__ import annotations
 
 import argparse
+import logging
 from pathlib import Path
 
 from src.config import get_settings
 from src.repositories.mlflow import MLFlowRepository
+
+
+def _configure_logging(level_name: str) -> None:
+    level = getattr(logging, level_name.upper(), logging.INFO)
+    logging.basicConfig(
+        level=level,
+        format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
+    )
 
 
 def parse_args() -> argparse.Namespace:
@@ -21,11 +30,25 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--artifact-path", type=str, default=None)
     parser.add_argument("--tracking-uri", type=str, default=None)
     parser.add_argument("--registry-uri", type=str, default=None)
+    parser.add_argument(
+        "--log-level",
+        type=str,
+        default="INFO",
+        choices=["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"],
+        help="Уровень логирования для диагностики подключения к MLflow.",
+    )
+    parser.add_argument(
+        "--debug",
+        action="store_true",
+        help="Сокращение для --log-level DEBUG.",
+    )
     return parser.parse_args()
 
 
 def main() -> None:
     args = parse_args()
+    log_level = "DEBUG" if args.debug else args.log_level
+    _configure_logging(log_level)
     settings = get_settings()
 
     run_ids = args.run_ids or settings.dataset_run_ids
