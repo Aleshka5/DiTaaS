@@ -51,10 +51,10 @@ class SFTLatentDataset(IterableDataset[dict[str, Tensor]]):
             raise ValueError("train_ratio должен быть в диапазоне (0, 1).")
 
     def _resolve_files_for_worker(self) -> list[Path]:
-        files = sorted(self.dataset_dir.glob("*.sft"))
+        files = sorted(self.dataset_dir.rglob("*.sft"))
         if not files:
             raise FileNotFoundError(
-                f"В директории {self.dataset_dir} не найдено ни одного .sft файла."
+                f"В директории {self.dataset_dir} и её подпапках не найдено ни одного .sft файла."
             )
 
         worker = get_worker_info()
