@@ -37,17 +37,12 @@ def parse_args() -> argparse.Namespace:
         choices=["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"],
         help="Уровень логирования для диагностики подключения к MLflow.",
     )
-    parser.add_argument(
-        "--debug",
-        action="store_true",
-        help="Сокращение для --log-level DEBUG.",
-    )
     return parser.parse_args()
 
 
 def main() -> None:
     args = parse_args()
-    log_level = "DEBUG" if args.debug else args.log_level
+    log_level = args.log_level
     _configure_logging(log_level)
     settings = get_settings()
 
