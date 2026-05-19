@@ -31,6 +31,14 @@ class Settings(BaseSettings):
 
     mlflow_tracking_uri: str | None = Field(default=None, alias="MLFLOW_TRACKING_URI")
     mlflow_registry_uri: str | None = Field(default=None, alias="MLFLOW_REGISTRY_URI")
+    mlflow_tracking_username: str | None = Field(
+        default=None,
+        alias="MLFLOW_TRACKING_USERNAME",
+    )
+    mlflow_tracking_password: str | None = Field(
+        default=None,
+        alias="MLFLOW_TRACKING_PASSWORD",
+    )
     mlflow_experiment_name: str = Field(default="DiT", alias="MLFLOW_EXPERIMENT_NAME")
     mlflow_registered_model_name: str = Field(
         default="DiTModel",

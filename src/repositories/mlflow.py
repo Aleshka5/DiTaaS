@@ -140,6 +140,8 @@ class MLFlowRepository:
             "AWS_DEFAULT_REGION": self.settings.aws_default_region,
             "S3_ENDPOINT_URL": self.settings.s3_endpoint_url,
             "MLFLOW_S3_ENDPOINT_URL": self.settings.mlflow_s3_endpoint_url,
+            "MLFLOW_TRACKING_USERNAME": self.settings.mlflow_tracking_username,
+            "MLFLOW_TRACKING_PASSWORD": self.settings.mlflow_tracking_password,
         }
         for key, value in env_overrides.items():
             if value and not os.getenv(key):
@@ -169,7 +171,7 @@ class MLFlowRepository:
         if not value:
             return "<empty>"
         upper_key = key.upper()
-        if "SECRET" in upper_key or "KEY" in upper_key:
+        if "SECRET" in upper_key or "KEY" in upper_key or "PASSWORD" in upper_key or "TOKEN" in upper_key:
             if upper_key == "AWS_ACCESS_KEY_ID":
                 return MLFlowRepository._mask_access_key_id(value)
             return "***"
@@ -200,6 +202,8 @@ class MLFlowRepository:
             ("MLFLOW_S3_ENDPOINT_URL", self.settings.mlflow_s3_endpoint_url),
             ("MLFLOW_TRACKING_URI", self.tracking_uri),
             ("MLFLOW_REGISTRY_URI", self.registry_uri),
+            ("MLFLOW_TRACKING_USERNAME", self.settings.mlflow_tracking_username),
+            ("MLFLOW_TRACKING_PASSWORD", self.settings.mlflow_tracking_password),
         ]
         snapshot = {
             key: {

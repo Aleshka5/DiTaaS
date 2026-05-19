@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 
 import mlflow
 from mlflow.entities import ViewType
@@ -61,8 +62,14 @@ def _search_runs_all_pages(
 
 def main() -> None:
     args = parse_args()
+    settings = get_settings()
     if not args.tracking_uri:
         raise ValueError("Не задан tracking URI. Укажите --tracking-uri или MLFLOW_TRACKING_URI.")
+
+    if settings.mlflow_tracking_username and not os.getenv("MLFLOW_TRACKING_USERNAME"):
+        os.environ["MLFLOW_TRACKING_USERNAME"] = settings.mlflow_tracking_username
+    if settings.mlflow_tracking_password and not os.getenv("MLFLOW_TRACKING_PASSWORD"):
+        os.environ["MLFLOW_TRACKING_PASSWORD"] = settings.mlflow_tracking_password
 
     mlflow.set_tracking_uri(args.tracking_uri)
     client = MlflowClient()
